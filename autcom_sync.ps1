@@ -170,7 +170,7 @@ while (-not $process.StandardOutput.EndOfStream) {
     if ([string]::IsNullOrEmpty($fileNameOnly)) { $fileNameOnly =$line.Trim() }
 
     # Monta a linha de status
-    $statusText = "[$currentCount/$totalFiles]$percent% | ETA: $etaStr \vert{} Copiando:$fileNameOnly"
+    $statusText = "[$currentCount/$totalFiles]$percent% | ETA: $etaStr \vert{} Copiando: $fileNameOnly"
 
     # Trunca caso ultrapasse a largura da janela para impedir quebras automáticas de linha
     if ($statusText.Length -ge $windowWidth) {$statusText = $statusText.Substring(0,$windowWidth - 4) + "..."
@@ -194,5 +194,5 @@ $totalTimeFormatted = if ($sw.Elapsed.TotalHours -ge 1) { $sw.Elapsed.ToString("
 # Limpa a linha do progresso
 Write-Host ("`r" + (" " * ($windowWidth - 1)) + "`r") -NoNewline
 Write-Host "Sincronização concluída com sucesso!" -ForegroundColor Green
-Write-Host "Arquivos processados : $currentCount de$totalFiles" -ForegroundColor White
+Write-Host "Arquivos processados : $currentCount de $totalFiles" -ForegroundColor White
 Write-Host "Tempo total decorrido: $totalTimeFormatted" -ForegroundColor White
