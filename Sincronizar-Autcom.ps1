@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Sincroniza X:\autcom com C:\Autcom para lojas do sistema Autcom.
 .PARAMETER CodigoLoja
@@ -106,7 +106,10 @@ $uncPath = "\\$lojaIp\c_linux"
 # -----------------------------------------------------------------------------
 # TAREFA 1: ELEVAÇÃO PARA VERIFICAR/CRIAR C:\Autcom E CONCEDER PERMISSÕES
 # -----------------------------------------------------------------------------
-if (-not (Test-Path -Path "C:\Autcom")) {
+$cPath = "C:\Autcom"
+Write-Host "[Tarefa 1/4] Verificando a pasta $cPath..." -ForegroundColor Cyan
+
+if (-not (Test-Path -LiteralPath $cPath -PathType Container)) {
     Write-Host "A pasta C:\Autcom não existe. Solicitando autorização de administrador..." -ForegroundColor Yellow
     
     # Chama o próprio script em modo elevado apenas para a criação/permissão do diretório
@@ -117,27 +120,92 @@ if (-not (Test-Path -Path "C:\Autcom")) {
         Write-Error "A elevação de privilégios falhou ou foi cancelada pelo usuário. O script não pode continuar."
         exit 1
     }
+
+    Write-Host "[Tarefa 1/4] Concluída: pasta criada e permissões configuradas." -ForegroundColor Green
+}
+else {
+    Write-Host "[Tarefa 1/4] Nenhuma ação necessária: a pasta já existe." -ForegroundColor Green
 }
 
 # -----------------------------------------------------------------------------
 # TAREFA 2: VERIFICAR/CRIAR MAPEAMENTO X: NO CONTEXTO DO USUÁRIO LOGADO
 # -----------------------------------------------------------------------------
-Write-Host "Verificando mapeamento da unidade X:..." -ForegroundColor Cyan
+Write-Host "[Tarefa 2/4] Verificando o mapeamento da unidade X:..." -ForegroundColor Cyan
 
 $diskX = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='X:'" -ErrorAction SilentlyContinue
-$currentProvider = $diskX.ProviderName
+$currentProvider = if ($diskX) { $diskX.ProviderName } else { $null }
+$normalizedProvider = if ($currentProvider) { $currentProvider.TrimEnd('\') } else { $null }
+$normalizedTarget = $uncPath.TrimEnd('\')
 
-if ($null -eq $currentProvider) {
-    Write-Host "Mapeando X: para $uncPath..." -ForegroundColor Yellow
-    net use X: "$uncPath" /persistent:yes
-}
-elseif ($currentProvider -ne $uncPath) {
-    Write-Host "Unidade X: está apontando para $currentProvider. Remapeando para $uncPath..." -ForegroundColor Yellow
-    net use X: /delete /yes
-    net use X: "$uncPath" /persistent:yes
+if ($normalizedProvider -and $normalizedProvider -ieq $normalizedTarget) {
+    Write-Host "[Tarefa 2/4] Nenhuma ação necessária: X: já está mapeada para $uncPath." -ForegroundColor Green
 }
 else {
-    Write-Host "Unidade X: já está corretamente mapeada para $uncPath." -ForegroundColor Green
+    if ($diskX) {
+        if (-not $currentProvider) {
+            Write-Error "A unidade X: já está em uso e não é um mapeamento de rede. O mapeamento não foi alterado."
+            exit 1
+        }
+
+        Write-Host "Unidade X: está apontando para $currentProvider. Remapeando para $uncPath..." -ForegroundColor Yellow
+        & net.exe use X: /delete /yes
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Não foi possível remover o mapeamento atual de X:."
+            exit 1
+        }
+    }
+    else {
+        Write-Host "Mapeando X: para $uncPath..." -ForegroundColor Yellow
+    }
+
+    & net.exe use X: "$uncPath" /persistent:yes
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Não foi possível mapear X: para $uncPath."
+        exit 1
+    }
+
+    $diskX = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='X:'" -ErrorAction Stop
+    $currentProvider = if ($diskX) { $diskX.ProviderName } else { $null }
+    if (-not $currentProvider -or $currentProvider.TrimEnd('\') -ine $normalizedTarget) {
+        Write-Error "A unidade X: não foi mapeada corretamente para $uncPath."
+        exit 1
+    }
+
+    Write-Host "[Tarefa 2/4] Concluída: X: foi mapeada para $uncPath." -ForegroundColor Green
+}
+
+# Garante que os atalhos dos aplicativos existam na Área de Trabalho do usuário atual
+Write-Host "[Tarefa 3/4] Verificando os atalhos na Área de Trabalho..." -ForegroundColor Cyan
+$desktopPath = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+$shortcutShell = New-Object -ComObject WScript.Shell -ErrorAction Stop
+$shortcuts = @(
+    @{ Name = 'C_Autcom'; Target = 'C:\Autcom\autcom.exe' },
+    @{ Name = 'X_Autcom'; Target = 'X:\Autcom\autcom.exe' },
+    @{ Name = 'C_PainelNfe'; Target = "C:\autcom\painelnfe_$CodigoLoja\PainelNFe.exe" },
+    @{ Name = 'X_PainelNfe'; Target = "X:\autcom\painelnfe_$CodigoLoja\PainelNFe.exe" }
+)
+$changedShortcuts = 0
+
+foreach ($item in $shortcuts) {
+    $shortcutPath = Join-Path -Path $desktopPath -ChildPath "$($item.Name).lnk"
+    $shortcutExists = Test-Path -LiteralPath $shortcutPath
+    $shortcut = $shortcutShell.CreateShortcut($shortcutPath)
+
+    if (-not $shortcutExists -or $shortcut.TargetPath -ine $item.Target) {
+        $shortcut.TargetPath = $item.Target
+        $shortcut.WorkingDirectory = Split-Path -Path $item.Target -Parent
+        $shortcut.Save()
+        $changedShortcuts++
+        $action = if ($shortcutExists) { 'corrigido' } else { 'criado' }
+        Write-Host "Atalho ${action}: $shortcutPath" -ForegroundColor Green
+    }
+}
+
+if ($changedShortcuts -eq 0) {
+    Write-Host "[Tarefa 3/4] Nenhuma ação necessária: os quatro atalhos já existem." -ForegroundColor Green
+}
+else {
+    Write-Host "[Tarefa 3/4] Concluída: $changedShortcuts atalho(s) criado(s) ou corrigido(s)." -ForegroundColor Green
 }
 
 # Garante que as pastas locais de controle existam na máquina do usuário
@@ -150,20 +218,21 @@ foreach ($folder in $localFolders) {
 }
 
 # -----------------------------------------------------------------------------
-# TAREFA 3: SINCRONIZAÇÃO VIA ROBOCOPY
+# TAREFA 4: SINCRONIZAÇÃO VIA ROBOCOPY
 # -----------------------------------------------------------------------------
 $origem = "X:\autcom"
 $destino = "C:\Autcom"
+
+Write-Host "[Tarefa 4/4] Verificando e sincronizando $origem para $destino..." -ForegroundColor Cyan
 
 if (-not (Test-Path -Path $origem)) {
     Write-Error "Origem $origem não encontrada no compartilhamento Samba. Verifique a conexão de rede."
     exit 1
 }
 
-Write-Host "Iniciando sincronização de $origem para $destino..." -ForegroundColor Cyan
-
 # Parâmetros de exclusão
 $excludeDirs = @(
+    "atualizador_tinta",
     "Boletos",
     "exe",
     "DANFE",
@@ -188,8 +257,44 @@ $excludeFiles = @(
 $logName = 'Sincronizar-Autcom-Robocopy-{0:yyyyMMdd-HHmmss-fff}-{1}.log' -f (Get-Date), $PID
 $robocopyLog = Join-Path -Path $env:TEMP -ChildPath $logName
 $robocopyUnicodeLog = "$robocopyLog.unicode"
-& robocopy.exe $origem $destino /MIR /FFT /R:2 /W:3 /XD $excludeDirs /XF $excludeFiles /TEE "/UNILOG:$robocopyUnicodeLog"
-$robocopyExitCode = $LASTEXITCODE
+$robocopyArguments = @(
+    $origem,
+    $destino,
+    '/MIR',
+    '/FFT',
+    '/R:2',
+    '/W:3',
+    '/XD'
+) + $excludeDirs + @('/XF') + $excludeFiles + @('/TEE', "/UNILOG:$robocopyUnicodeLog")
+$quotedArguments = $robocopyArguments | ForEach-Object { '"{0}"' -f $_ }
+
+$processInfo = New-Object System.Diagnostics.ProcessStartInfo
+$processInfo.FileName = 'robocopy.exe'
+$processInfo.Arguments = $quotedArguments -join ' '
+$processInfo.UseShellExecute = $false
+$processInfo.CreateNoWindow = $false
+$processInfo.RedirectStandardOutput = $true
+$processInfo.StandardOutputEncoding = [System.Text.Encoding]::Default
+
+$robocopyProcess = [System.Diagnostics.Process]::Start($processInfo)
+$errorOutputStarted = $false
+Write-Host 'Sincronizando arquivos...' -NoNewline
+
+while (($outputLine = $robocopyProcess.StandardOutput.ReadLine()) -ne $null) {
+    if ($outputLine -match '(?i)\b(?:ERROR|ERRO)\s+\d+') {
+        if (-not $errorOutputStarted) {
+            Write-Host ''
+            $errorOutputStarted = $true
+        }
+
+        Write-Host $outputLine -ForegroundColor Red
+    }
+}
+
+$robocopyProcess.WaitForExit()
+$robocopyExitCode = $robocopyProcess.ExitCode
+$robocopyProcess.Dispose()
+Write-Host ''
 
 $robocopyOutput = [System.IO.File]::ReadAllText($robocopyUnicodeLog, [System.Text.Encoding]::Unicode)
 [System.IO.File]::WriteAllText($robocopyLog, $robocopyOutput, [System.Text.UTF8Encoding]::new($false))
@@ -197,7 +302,13 @@ Remove-Item -LiteralPath $robocopyUnicodeLog -ErrorAction Stop
 
 # Códigos de retorno do Robocopy até 7 indicam sucesso ou arquivos atualizados sem erro fatal
 if ($robocopyExitCode -lt 8) {
-    Write-Host "Sincronização concluída com sucesso! Código de retorno Robocopy: $robocopyExitCode" -ForegroundColor Green
-} else {
-    Write-Error "O Robocopy encontrou falha(s) durante a cópia. Código de retorno: $robocopyExitCode. Consulte o log detalhado em: $robocopyLog"
+    if ($robocopyExitCode -eq 0) {
+        Write-Host "[Tarefa 4/4] Nenhuma ação necessária: origem e destino já estão sincronizados." -ForegroundColor Green
+    }
+    else {
+        Write-Host "[Tarefa 4/4] Concluída sem falhas. Código de retorno Robocopy: $robocopyExitCode. Log: $robocopyLog" -ForegroundColor Green
+    }
+}
+else {
+    Write-Error "[Tarefa 4/4] Falha na sincronização. Código de retorno Robocopy: $robocopyExitCode. Consulte o log: $robocopyLog"
 }
